@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Earthquake Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Leaflet + MarkerCluster -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      display: flex;
+      flex-direction: row; /* horizontal layout */
+      height: 100vh;
+      margin: 0;
+    }
+    #title {
+      position: absolute;
+      top: -10px;
+      left: 60px;
+      z-index: 1000;
+      background-color: rgba(255, 255, 255, 0.692);
+      padding: 15px 15px;
+      border-radius: 8px;
+      font-size: 25px;
+      font-weight: bold;
+      color: #2c3e50;
+      font-family: Arial, sans-serif;
+      box-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
+    }
+    #map {
+      position: relative; /* Needed for absolute positioning inside */
+      flex: 2; /* Map takes 2/3 of screen width */
+      height: 100%;
+    }
+    #infrastructure-table {
+      flex: 1; /* Table takes 1/3 of screen width */
+      height: 100%;
+      overflow-y: auto;
+      background: #f9f9f9;
+      border-left: 1px solid #ccc;
+    }
+    #infrastructure-table h3 {
+      margin: 10px;
+    }
+    #grouped-summary {
+      padding: 10px;
+      font-size: 14px;
+    }
+    /* Optional: make table more compact */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      padding: 6px;
+      border-bottom: 1px solid #ddd;
+      text-align: left;
+    }
+    th {
+      background-color: #eee;
+    }
+    .filter-panel {
+      width: 210px;
+      position: absolute;
+      top: 15px;
+      right: 15px;
+      z-index: 1000;
+      background-color: #ffffff98;
+      padding: 12px 16px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      font-family: sans-serif;
+      font-size: 14px;
+    }
+    .filter-panel label {
+      display: block;
+      font-weight: 500;
+    }
+    .filter-panel input {
+      width: 100%;
+      padding: 5px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    .filter-panel button {
+      width: 100%;
+      padding: 8px;
+      background-color: #007BFF;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background-color 0.3s ease;
+    }
+    .filter-panel button:hover {
+      background-color: #0056b3;
+    }
+
+  /* Custom legend style */
+  .legend {
+    background-color: rgba(255, 255, 255, 0.705);
+    padding: 10px;
+    border-radius: 5px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    font-size: 14px;
+    line-height: 1.2em;
+    width: 170px;
+  }
+  .legend-title {
+    font-weight: bold;
+    text-decoration: underline;
+    margin-bottom: 8px;
+  }
+  .legend .legend-item {
+    display: flex;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+  .legend .legend-color {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    margin-right: 8px;
+    flex-shrink: 0;
+  }
+.legend .legend-label {
+  word-wrap: break-word;
+}
+  .legend .legend-item span {
+    width:20px;
+    height: 20px;
+    border-radius: 50%;
+    margin-right: 10px;
+  }
+  </style>
+</head>
+<body>
+  <h3 id="title">Nepal Earthquake Response Dashboard</h3>
+  <div id="map">
+    <!-- Add filters above the map -->
+    <div class="filter-panel">
+      <label>Min Magnitude: <input type="number" id="minMag" value="0" step="0.1" /></label><br>
+      <label>Start Date: <input type="date" id="startDate" /></label><br>
+      <label>Max Distance (km): <input type="number" id="maxDist" value="20" /></label><br>
+      <button onclick="applyFilters()">Apply Filters</button>
+    </div>
+  </div>
+<!-- table to show infrastructure within the buffer -->
+  <div id="infrastructure-table">
+    <h3><u>All Infrastructure Within 20km of Earthquakes</u></h3>
+    <div id="grouped-summary"></div>
+  </div>  
+
+  <!-- Scripts -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <script src="https://unpkg.com/@turf/turf/turf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/osmtogeojson@2.2.11/osmtogeojson.js"></script>
+  <script>
+    const map = L.map('map').setView([28.3949, 84.1240], 7);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+// Loading  OSM data within bagmati province
+const overpassQuery = `
+      [out:json][timeout:25];
+      (
+        node["amenity"="hospital"](27.5,85.06,29.4,86.5);
+        node["amenity"="school"](27.5,85.06,29.4,86.5);
+        node["office"="government"](27.5,85.06,29.4,86.5);
+      );
+      out body geom;
+    `;
+    let infrastructurePromise = fetch('https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(overpassQuery))
+    .then(res => res.json())
+    .then(osmData => {
+      const geojson = osmtogeojson(osmData);
+      infrastructureFeatures = geojson.features;
+
+      L.geoJSON(geojson, {
+        pointToLayer: (feature, latlng) => {
+          const tags = feature.properties.tags;
+          let color = 'gray';
+
+          if (tags.amenity === 'hospital') color = 'red';
+          else if (tags.amenity === 'school') color = 'blue';
+          else if (tags.office === 'government') color = 'green';
+
+          return L.circleMarker(latlng, { radius: 5, color: color });
+        },
+        onEachFeature: (feature, layer) => {
+          const tags = feature.properties.tags;
+          let name = tags.name || 'Unnamed';
+          let type = tags.amenity || tags.office || tags.highway || 'Unknown';
+
+          layer.bindPopup(`<b>${type}:</b> ${name}`);
+        }
+      }).addTo(map);
+    });
+
+// loading earthquake data form USGS earth explorer
+const startTime = '2018-01-01';
+const endTime = new Date().toISOString().split('T')[0]; // till date
+
+const markers = L.markerClusterGroup();
+let earthquakeData = [];
+
+const usgsUrl = `https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson` +
+  `&starttime=${startTime}&endtime=${endTime}` +
+  `&minlatitude=26.347&maxlatitude=29.4` +
+  `&minlongitude=80.058&maxlongitude=88.201` +
+  `&minmagnitude=4.9`; //  min magnitude 
+
+  let earthquakePromise = fetch(usgsUrl)
+  .then(res => res.json())
+  .then(data => {
+    earthquakeData = data.features;
+
+    const eqLayer = L.geoJSON(data, {
+      onEachFeature: (feature, layer) => {
+        layer.bindPopup(`<b>Mag:</b> ${feature.properties.mag}<br><b>Place:</b> ${feature.properties.place}`);
+      }
+    });
+
+    markers.addLayer(eqLayer);
+    map.addLayer(markers);
+
+    bufferEarthquakes(data.features);
+  });
+
+// Adding the legend control
+const legend = L.control({ position: 'bottomleft' });
+legend.onAdd = function(map) {
+  const div = L.DomUtil.create('div', 'legend');
+  div.innerHTML = `
+    <div class="legend-title">Legend</div>
+    <div class="legend-item">
+      <span class="legend-color" style="background-color: red;"></span>
+      <div class="legend-label">Hospital</div>
+    </div>
+    <div class="legend-item">
+      <span class="legend-color" style="background-color: blue;"></span>
+      <div class="legend-label">School</div>
+    </div>
+    <div class="legend-item">
+      <span class="legend-color" style="background-color: green;"></span>
+      <div class="legend-label">Government Office</div>
+    </div>
+    <div class="legend-item">
+      <span class="legend-color" style="background-color: orange;"></span>
+      <div class="legend-label">Earthquake (Mag ≤ 5)</div>
+    </div>
+    <div class="legend-item">
+      <span class="legend-color" style="background-color: red;"></span>
+      <div class="legend-label">Earthquake (Mag > 5)</div>
+    </div>
+  `;
+  return div;
+};
+
+legend.addTo(map);
+
+// to populate the table
+  Promise.all([infrastructurePromise, earthquakeData])
+  .then(() => {
+    const results = identifyInfrastructureWithinBuffers(20);
+    displayInfrastructureGrouped(results);
+  });
+
+  // buffering the earthquake data
+  function bufferEarthquakes(features) {
+      features.forEach(eq => {
+        const mag = eq.properties.mag;
+        const coords = eq.geometry.coordinates;
+        const epicenter = turf.point([coords[0], coords[1]]);
+        const buffer = turf.buffer(epicenter, 20, { units: 'kilometers' });
+
+        L.geoJSON(buffer, { style: { color: mag > 5 ? 'red' : 'orange', weight: 2 } }).addTo(map);
+      });
+    }
+
+// indentifying insfrastructure within the earthquake buffer
+function identifyInfrastructureWithinBuffers(bufferDistanceKm = 20) {
+  if (!earthquakeData.length || !infrastructureFeatures.length) {
+    console.warn("Earthquake or infrastructure data not loaded yet.");
+    return [];
+  }
+  const results = [];
+  earthquakeData.forEach(eq => {
+    const coords = eq.geometry.coordinates;
+    const mag = eq.properties.mag;
+    const place = eq.properties.place || "Unknown location";
+    const epicenter = turf.point([coords[0], coords[1]]);
+    const buffer = turf.buffer(epicenter, bufferDistanceKm, { units: 'kilometers' });
+    const inBuffer = infrastructureFeatures.filter(f => {
+      const pt = turf.point(f.geometry.coordinates);
+      return turf.booleanPointInPolygon(pt, buffer);
+    });
+    results.push({
+      earthquake: {
+        magnitude: mag,
+        place: place,
+        coordinates: coords,
+        bufferRadiusKm: bufferDistanceKm
+      },
+      infrastructures: inBuffer.map(f => {
+        const tags = f.properties.tags || {};
+        return {
+          name: tags.name || 'Unnamed',
+          type: tags.amenity || tags.office || tags.highway || 'Unknown',
+          coordinates: f.geometry.coordinates
+        };
+      })
+    });
+  });
+  console.log("Results from buffer analysis:", results);  // Check the results here
+  return results;
+}
+
+// Function to populate the infrastructure table within the buffer
+function displayInfrastructureGrouped(results) {
+  const container = document.getElementById("grouped-summary");
+  container.innerHTML = ""; // Clear previous content
+  if (!Array.isArray(results) || results.length === 0) {
+    container.innerHTML = "<p style='margin-left:15px;'>No infrastructures within 20 km.</p>";
+    return;
+  }
+  results.forEach((entry, index) => {
+    const eq = entry.earthquake;
+    const infraList = entry.infrastructures;
+
+    // Create a title for each earthquake entry
+    const title = document.createElement("h4");
+    title.textContent = `#${index + 1} - M${eq.magnitude} - ${eq.place}`;
+    container.appendChild(title);
+    // Create the table for infrastructure details
+    const table = document.createElement("table");
+    table.style.width = "100%";
+    table.style.borderCollapse = "collapse";
+    // Table Header
+    const thead = document.createElement("thead");
+    const headerRow = document.createElement("tr");
+    headerRow.innerHTML = "<th>Infrastructure Type</th><th>Name</th><th>Distance (km)</th><th>Priority</th>";
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+    // Table Body for Infrastructure Data
+    const tbody = document.createElement("tbody");
+    infraList.forEach(infra => {
+      const distance = turf.distance(
+        turf.point([eq.coordinates[0], eq.coordinates[1]]), // Epicenter
+        turf.point(infra.coordinates) // Infrastructure point
+      ).toFixed(2); // Distance in km
+
+      const priority = eq.magnitude > 5 ? "High Priority" : "Normal"; // Priority based on magnitude
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td>${infra.type}</td>
+        <td>${infra.name}</td>
+        <td>${distance} km</td>
+        <td>${priority}</td>
+      `;
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody);
+    container.appendChild(table);
+  });
+}
+Promise.all([earthquakeData, infrastructureFeatures]).then(() => {
+  const results = identifyInfrastructureWithinBuffers(20);
+  displayInfrastructureGrouped(results); 
+});
+
+// filtering of earthquake by magnitude, date and time
+function applyFilters() {
+  const minMag = parseFloat(document.getElementById('minMag').value);
+  const startDateStr = document.getElementById('startDate').value;
+  const maxDist = parseFloat(document.getElementById('maxDist').value);
+  const startDate = startDateStr ? new Date(startDateStr) : null;
+
+  // Clear previous earthquake layers and buffers
+  markers.clearLayers();
+  map.eachLayer(layer => {
+    if ((layer instanceof L.GeoJSON || layer instanceof L.LayerGroup) && layer !== markers && !layer.options.preserveOnFilter) {
+      map.removeLayer(layer);
+    }
+  });
+  document.getElementById('grouped-summary').innerHTML = ''; // to Clear previous summary
+
+  const filteredResults = [];
+
+  earthquakeData.forEach(eq => {
+    const mag = eq.properties.mag;
+    const time = new Date(eq.properties.time);
+    const coords = eq.geometry.coordinates;
+    const epicenter = turf.point([coords[0], coords[1]]);
+    const magMatch = !isNaN(minMag) ? mag >= minMag : true;
+    const dateMatch = startDate ? time >= startDate : true;
+
+    if (magMatch && dateMatch) {
+      // Add earthquake marker
+      const layer = L.geoJSON(eq, {
+        onEachFeature: (feature, layer) => {
+          layer.bindPopup(`<b>Mag:</b> ${mag}<br><b>Place:</b> ${eq.properties.place}`);
+        }
+      });
+      markers.addLayer(layer);
+
+      // Add buffer
+      const buffer = turf.buffer(epicenter, isNaN(maxDist) ? 20 : maxDist, { units: 'kilometers' });
+      L.geoJSON(buffer, { style: { color: mag > 5 ? 'red' : 'orange', weight: 2 } }).addTo(map);
+
+      // Find infrastructures inside buffer
+      const inBuffer = infrastructureFeatures.filter(f => {
+        const pt = turf.point(f.geometry.coordinates);
+        return turf.booleanPointInPolygon(pt, buffer);
+      });
+
+      const resultEntry = {
+        earthquake: {
+          magnitude: mag,
+          place: eq.properties.place || 'Unknown',
+          coordinates: coords,
+          bufferRadiusKm: isNaN(maxDist) ? 20 : maxDist
+        },
+        infrastructures: inBuffer.map(f => {
+          const tags = f.properties.tags || {};
+          return {
+            name: tags.name || 'Unnamed',
+            type: tags.amenity || tags.office || tags.highway || 'Unknown',
+            coordinates: f.geometry.coordinates
+          };
+        })
+      };
+      filteredResults.push(resultEntry);
+    }
+  });
+  map.addLayer(markers);
+  displayInfrastructureGrouped(filteredResults); // Update table
+}
+</script>
+</body>
+</html>
