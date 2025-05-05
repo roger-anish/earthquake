@@ -334,7 +334,6 @@ function displayInfrastructureGrouped(results) {
   results.forEach((entry, index) => {
     const eq = entry.earthquake;
     const infraList = entry.infrastructures;
-
     // Create a title for each earthquake entry
     const title = document.createElement("h4");
     title.textContent = `#${index + 1} - M${eq.magnitude} - ${eq.place}`;
@@ -419,6 +418,39 @@ function applyFilters() {
       const inBuffer = infrastructureFeatures.filter(f => {
         const pt = turf.point(f.geometry.coordinates);
         return turf.booleanPointInPolygon(pt, buffer);
+      });
+
+      inBuffer.forEach(f => {
+        const tags = f.properties.tags || {};
+        const name = tags.name || 'Unnamed';
+        const type = tags.amenity || tags.office || tags.highway || 'Unknown';
+        
+        let color = 'blue';
+        switch (type) {
+          case 'hospital':
+            color = 'red';
+            break;
+          case 'school':
+            color = 'blue';
+            break;
+          case 'government':
+            color = 'green';
+            break;
+          default:
+            color = 'gray';
+        }
+        const pt = L.geoJSON(f, {
+          pointToLayer: (feature, latlng) =>
+            L.circleMarker(latlng, {
+              radius: 5,
+              fillColor: color,
+              color: '#000',
+              weight: 1,
+              opacity: 1,
+              fillOpacity: 0.8
+            })
+        }).bindPopup(`<b>${name}</b><br>Type: ${type}`);
+        pt.addTo(map);
       });
 
       const resultEntry = {
